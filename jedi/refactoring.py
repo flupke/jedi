@@ -1,10 +1,25 @@
-""" Introduce refactoring """
+"""
+Introduce some basic refactoring functions to |jedi|. This module is still in a
+very early development stage and needs much testing and improvement.
 
+.. warning:: I won't do too much here, but if anyone wants to step in, please
+             do. Refactoring is none of my priorities
+
+It uses the |jedi| `API <plugin-api.html>`_ and supports currently the
+following functions (sometimes bug-prone):
+
+- rename
+- extract variable
+- inline variable
+"""
 from __future__ import with_statement
 
-import modules
 import difflib
-import helpers
+
+from jedi import common
+from jedi import modules
+from jedi import helpers
+from jedi import parsing_representation as pr
 
 
 class Refactoring(object):
@@ -44,13 +59,14 @@ def rename(script, new_name):
     :type source: str
     :return: list of changed lines/changed files
     """
-    return Refactoring(_rename(script.related_names(), new_name))
+    return Refactoring(_rename(script.usages(), new_name))
 
 
 def _rename(names, replace_str):
     """ For both rename and inline. """
     order = sorted(names, key=lambda x: (x.module_path, x.start_pos),
                             reverse=True)
+
     def process(path, old_lines, new_lines):
         if new_lines is not None:  # goto next file, save last
             dct[path] = path, old_lines, new_lines
@@ -76,7 +92,7 @@ def _rename(names, replace_str):
         nr, indent = name.start_pos
         line = new_lines[nr - 1]
         new_lines[nr - 1] = line[:indent] + replace_str + \
-                            line[indent + len(name.name_part):]
+                            line[indent + len(name.text):]
     process(current_path, old_lines, new_lines)
     return dct
 
@@ -98,13 +114,10 @@ def extract(script, new_name):
     if user_stmt:
         pos = script.pos
         line_index = pos[0] - 1
-        arr, index = helpers.array_for_pos(user_stmt.get_assignment_calls(),
-                                            pos)
-        if arr:
-            s = arr.start_pos[0], arr.start_pos[1] + 1
-            positions = [s] + arr.arr_el_pos + [arr.end_pos]
-            start_pos = positions[index]
-            end_pos = positions[index + 1][0], positions[index + 1][1] - 1
+        arr, index = helpers.array_for_pos(user_stmt, pos)
+        if arr is not None:
+            start_pos = arr[index].start_pos
+            end_pos = arr[index].end_pos
 
             # take full line if the start line is different from end line
             e = end_pos[1] if end_pos[0] == start_pos[0] else None
@@ -115,7 +128,6 @@ def extract(script, new_name):
             if e is None:
                 end_line = new_lines[end_pos[0] - 1]
                 text += '\n' + end_line[:end_pos[1]]
-
 
             # remove code from new lines
             t = text.lstrip()
@@ -130,7 +142,7 @@ def extract(script, new_name):
                 e = e - del_end
             start_line = start_line[:del_start] + new_name + start_line[e:]
             new_lines[start_pos[0] - 1] = start_line
-            new_lines[start_pos[0]:end_pos[0]-1] = []
+            new_lines[start_pos[0]:end_pos[0] - 1] = []
 
             # add parentheses in multiline case
             open_brackets = ['(', '[', '{']
@@ -156,30 +168,31 @@ def inline(script):
     dct = {}
 
     definitions = script.goto()
-    try:
+    with common.ignored(AssertionError):
         assert len(definitions) == 1
-        stmt = definitions[0].definition
-        related_names = script.related_names()
-        inlines = [r for r in related_names
+        stmt = definitions[0]._definition
+        usages = script.usages()
+        inlines = [r for r in usages
                         if not stmt.start_pos <= r.start_pos <= stmt.end_pos]
         inlines = sorted(inlines, key=lambda x: (x.module_path, x.start_pos),
                                                 reverse=True)
-        ass = stmt.get_assignment_calls()
+        commands = stmt.get_commands()
         # don't allow multiline refactorings for now.
-        assert ass.start_pos[0] == ass.end_pos[0]
-        index = ass.start_pos[0] - 1
+        assert stmt.start_pos[0] == stmt.end_pos[0]
+        index = stmt.start_pos[0] - 1
 
         line = new_lines[index]
-        replace_str = line[ass.start_pos[1]:ass.end_pos[1] + 1]
+        replace_str = line[commands[0].start_pos[1]:stmt.end_pos[1] + 1]
         replace_str = replace_str.strip()
         # tuples need parentheses
-        if len(ass.values) > 1:
-            replace_str = '(%s)' % replace_str
+        if commands and isinstance(commands[0], pr.Array):
+            arr = commands[0]
+            if replace_str[0] not in ['(', '[', '{'] and len(arr) > 1:
+                replace_str = '(%s)' % replace_str
 
         # if it's the only assignment, remove the statement
         if len(stmt.set_vars) == 1:
             line = line[:stmt.start_pos[1]] + line[stmt.end_pos[1]:]
-
 
         dct = _rename(inlines, replace_str)
         # remove the empty line
@@ -188,8 +201,5 @@ def inline(script):
             new_lines[index] = line
         else:
             new_lines.pop(index)
-
-    except AssertionError:
-        pass
 
     return Refactoring(dct)

@@ -1,7 +1,7 @@
 
 from jedi import functions, evaluate, parsing
 
-el = functions.complete()[0]
+el = functions.completions()[0]
 #? ['description']
 el.description
 
@@ -10,8 +10,7 @@ el.description
 
 
 scopes, path, dot, like = \
-    functions.prepare_goto(source, row, column,
-                            source_path, True)
+    api._prepare_goto(source, row, column, source_path, True)
 
 # has problems with that (sometimes) very deep nesting.
 #? set()

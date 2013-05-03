@@ -1,28 +1,44 @@
-""" Processing of docstrings, which means parsing for types. """
+"""
+Docstrings are another source of information for functions and classes.
+:mod:`dynamic` tries to find all executions of functions, while the docstring
+parsing is much easier. There are two different types of docstrings that |jedi|
+understands:
+
+- `Sphinx <http://sphinx-doc.org/markup/desc.html#info-field-lists>`_
+- `Epydoc <http://epydoc.sourceforge.net/manual-fields.html>`_
+
+For example, the sphinx annotation ``:type foo: str`` clearly states that the
+type of ``foo`` is ``str``.
+
+As an addition to parameter searching, this module also provides return
+annotations.
+"""
 
 import re
 
+from jedi import cache
+from jedi import parsing
 import evaluate
 import evaluate_representation as er
-import parsing
 
 DOCSTRING_PARAM_PATTERNS = [
-    r'\s*:type\s+%s:\s*([^\n]+)', # Sphinx
-    r'\s*@type\s+%s:\s*([^\n]+)', # Epidoc
+    r'\s*:type\s+%s:\s*([^\n]+)',  # Sphinx
+    r'\s*@type\s+%s:\s*([^\n]+)',  # Epydoc
 ]
 
 DOCSTRING_RETURN_PATTERNS = [
-        re.compile(r'\s*:rtype:\s*([^\n]+)', re.M), # Sphinx
-        re.compile(r'\s*@rtype:\s*([^\n]+)', re.M), # Epidoc
+        re.compile(r'\s*:rtype:\s*([^\n]+)', re.M),  # Sphinx
+        re.compile(r'\s*@rtype:\s*([^\n]+)', re.M),  # Epydoc
 ]
 
 REST_ROLE_PATTERN = re.compile(r':[^`]+:`([^`]+)`')
 
-#@cache.memoize_default()  # TODO add
+
+@cache.memoize_default()
 def follow_param(param):
     func = param.parent_function
     #print func, param, param.parent_function
-    param_str = search_param_in_docstr(func.docstr, str(param.get_name()))
+    param_str = _search_param_in_docstr(func.docstr, str(param.get_name()))
     user_position = (1, 0)
 
     if param_str is not None:
@@ -41,40 +57,41 @@ def follow_param(param):
     return []
 
 
-def search_param_in_docstr(docstr, param_str):
+def _search_param_in_docstr(docstr, param_str):
     """
     Search `docstr` for a type of `param_str`.
 
-    >>> search_param_in_docstr(':type param: int', 'param')
+    >>> _search_param_in_docstr(':type param: int', 'param')
     'int'
-    >>> search_param_in_docstr('@type param: int', 'param')
+    >>> _search_param_in_docstr('@type param: int', 'param')
     'int'
-    >>> search_param_in_docstr(
+    >>> _search_param_in_docstr(
     ...   ':type param: :class:`threading.Thread`', 'param')
     'threading.Thread'
-    >>> search_param_in_docstr('no document', 'param') is None
+    >>> _search_param_in_docstr('no document', 'param') is None
     True
 
     """
     # look at #40 to see definitions of those params
-    patterns = [ re.compile(p % re.escape(param_str)) for p in DOCSTRING_PARAM_PATTERNS ]
+    patterns = [re.compile(p % re.escape(param_str))
+                for p in DOCSTRING_PARAM_PATTERNS]
     for pattern in patterns:
         match = pattern.search(docstr)
         if match:
-            return strip_rest_role(match.group(1))
+            return _strip_rest_role(match.group(1))
 
     return None
 
 
-def strip_rest_role(type_str):
+def _strip_rest_role(type_str):
     """
     Strip off the part looks like a ReST role in `type_str`.
 
-    >>> strip_rest_role(':class:`ClassName`')  # strip off :class:
+    >>> _strip_rest_role(':class:`ClassName`')  # strip off :class:
     'ClassName'
-    >>> strip_rest_role(':py:obj:`module.Object`')  # works with domain
+    >>> _strip_rest_role(':py:obj:`module.Object`')  # works with domain
     'module.Object'
-    >>> strip_rest_role('ClassName')  # do nothing when not ReST role
+    >>> _strip_rest_role('ClassName')  # do nothing when not ReST role
     'ClassName'
 
     See also:
@@ -89,6 +106,12 @@ def strip_rest_role(type_str):
 
 
 def find_return_types(func):
+    def search_return_in_docstr(code):
+        for p in DOCSTRING_RETURN_PATTERNS:
+            match = p.search(code)
+            if match:
+                return match.group(1)
+
     if isinstance(func, er.InstanceElement):
         func = func.var
 
@@ -102,9 +125,3 @@ def find_return_types(func):
     p = parsing.Parser(type_str, None, (1, 0), no_docstr=True)
     p.user_stmt.parent = func
     return list(evaluate.follow_statement(p.user_stmt))
-
-def search_return_in_docstr(code):
-    for p in DOCSTRING_RETURN_PATTERNS:
-        match = p.search(code)
-        if match:
-            return match.group(1)

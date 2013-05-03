@@ -22,9 +22,11 @@ Docs
 
    docs/installation
    docs/features
+   docs/recipes
    docs/plugin-api
    docs/history
    docs/development
+   docs/testing
 
 
 .. _resources:

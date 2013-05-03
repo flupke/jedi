@@ -7,28 +7,27 @@ catch :exc:`NotFoundError` which is being raised if your completion is not
 possible.
 """
 from __future__ import with_statement
-__all__ = ['Script', 'NotFoundError', 'set_debug_function', '_quick_complete']
 
 import re
 import os
+import warnings
 
-import parsing
-import parsing_representation as pr
+from jedi import parsing
+from jedi import parsing_representation as pr
+from jedi import debug
+from jedi import settings
+from jedi import helpers
+from jedi import common
+from jedi import cache
+from jedi import modules
+from jedi._compatibility import next, unicode
+import evaluate
+import keywords
+import api_classes
 import evaluate_representation as er
 import dynamic
 import imports
-import evaluate
-import modules
-import debug
-import settings
-import keywords
-import helpers
-import common
 import builtin
-import api_classes
-import cache
-
-from _compatibility import next, unicode
 
 
 class NotFoundError(Exception):
@@ -38,7 +37,7 @@ class NotFoundError(Exception):
 
 class Script(object):
     """
-    A Script is the base for a completion, goto or whatever you want to do with
+    A Script is the base for completions, goto or whatever you want to do with
     |jedi|.
 
     :param source: The source code of the current file, separated by newlines.
@@ -75,7 +74,8 @@ class Script(object):
         """ lazy parser."""
         return self._module.parser
 
-    def complete(self):
+    @api_classes._clear_caches_after_call
+    def completions(self):
         """
         Return :class:`api_classes.Completion` objects. Those objects contain
         information about the completions, more than just names.
@@ -83,7 +83,7 @@ class Script(object):
         :return: Completion objects, sorted by name and __ comes last.
         :rtype: list of :class:`api_classes.Completion`
         """
-        debug.speed('complete start')
+        debug.speed('completions start')
         path = self._module.get_path_until_cursor()
         if re.search('^\.|\.\.$', path):
             return []
@@ -121,9 +121,8 @@ class Script(object):
                 for c in names:
                     completions.append((c, s))
 
-        if not dot:  # named_params have no dots
-            call_def = self.get_in_function_call()
-            if call_def:
+        if not dot:  # named params have no dots
+            for call_def in self.call_signatures():
                 if not call_def.module.is_builtin():
                     for p in call_def.params:
                         completions.append((p.get_name(), p))
@@ -133,7 +132,7 @@ class Script(object):
             bs = builtin.Builtin.scope
             if isinstance(u, pr.Import):
                 if (u.relative_count > 0 or u.from_ns) and not re.search(
-                               r'(,|from)\s*$|import\s+$', completion_line):
+                            r'(,|from)\s*$|import\s+$', completion_line):
                     completions += ((k, bs) for k
                                             in keywords.get_keywords('import'))
 
@@ -155,22 +154,24 @@ class Script(object):
                                                     self._parser.user_stmt, n):
                     new = api_classes.Completion(c, needs_dot,
                                                     len(like), s)
-                    k = (new.word, new.complete)  # key
+                    k = (new.name, new.complete)  # key
                     if k in comp_dct and settings.no_completion_duplicates:
                         comp_dct[k]._same_name_completions.append(new)
                     else:
                         comp_dct[k] = new
                         comps.append(new)
 
-        debug.speed('complete end')
+        debug.speed('completions end')
 
-        return sorted(comps, key=lambda x: (x.word.startswith('__'),
-                                            x.word.startswith('_'),
-                                            x.word.lower()))
+        return sorted(comps, key=lambda x: (x.name.startswith('__'),
+                                            x.name.startswith('_'),
+                                            x.name.lower()))
 
     def _prepare_goto(self, goto_path, is_like_search=False):
-        """ Base for complete, goto and get_definition. Basically it returns
-        the resolved scopes under cursor. """
+        """
+        Base for completions/goto. Basically it returns the resolved scopes
+        under cursor.
+        """
         debug.dbg('start: %s in %s' % (goto_path, self._parser.user_scope))
 
         user_stmt = self._parser.user_stmt
@@ -190,24 +191,88 @@ class Script(object):
         return scopes
 
     def _get_under_cursor_stmt(self, cursor_txt):
-        r = parsing.Parser(cursor_txt, no_docstr=True)
+        offset = self.pos[0] - 1, self.pos[1]
+        r = parsing.Parser(cursor_txt, no_docstr=True, offset=offset)
         try:
             stmt = r.module.statements[0]
         except IndexError:
             raise NotFoundError()
-        stmt.start_pos = self.pos
         stmt.parent = self._parser.user_scope
         return stmt
 
+    def complete(self):
+        """
+        .. deprecated:: 0.6.0
+           Use :attr:`.completions` instead.
+        .. todo:: Remove!
+        """
+        warnings.warn("Use completions instead.", DeprecationWarning)
+        return self.completions()
+
+    def goto(self):
+        """
+        .. deprecated:: 0.6.0
+           Use :attr:`.goto_assignments` instead.
+        .. todo:: Remove!
+        """
+        warnings.warn("Use goto_assignments instead.", DeprecationWarning)
+        return self.goto_assignments()
+
+    def definition(self):
+        """
+        .. deprecated:: 0.6.0
+           Use :attr:`.goto_definitions` instead.
+        .. todo:: Remove!
+        """
+        warnings.warn("Use goto_definitions instead.", DeprecationWarning)
+        return self.goto_definitions()
+
     def get_definition(self):
         """
-        Return the definitions of a the path under the cursor. This is not a
-        goto function! This follows complicated paths and returns the end, not
-        the first definition. The big difference between :meth:`goto` and
-        :meth:`get_definition` is that :meth:`goto` doesn't follow imports and
-        statements. Multiple objects may be returned, because Python itself is
-        a dynamic language, which means depending on an option you can have two
-        different versions of a function.
+        .. deprecated:: 0.5.0
+           Use :attr:`.goto_definitions` instead.
+        .. todo:: Remove!
+        """
+        warnings.warn("Use goto_definitions instead.", DeprecationWarning)
+        return self.goto_definitions()
+
+    def related_names(self):
+        """
+        .. deprecated:: 0.6.0
+           Use :attr:`.usages` instead.
+        .. todo:: Remove!
+        """
+        warnings.warn("Use usages instead.", DeprecationWarning)
+        return self.usages()
+
+    def get_in_function_call(self):
+        """
+        .. deprecated:: 0.6.0
+           Use :attr:`.call_signatures` instead.
+        .. todo:: Remove!
+        """
+        return self.function_definition()
+
+    def function_definition(self):
+        """
+        .. deprecated:: 0.6.0
+           Use :attr:`.call_signatures` instead.
+        .. todo:: Remove!
+        """
+        warnings.warn("Use line instead.", DeprecationWarning)
+        sig = self.call_signatures()
+        return sig[0] if sig else None
+
+    @api_classes._clear_caches_after_call
+    def goto_definitions(self):
+        """
+        Return the definitions of a the path under the cursor.  goto function!
+        This follows complicated paths and returns the end, not the first
+        definition. The big difference between :meth:`goto_assignments` and
+        :meth:`goto_definitions` is that :meth:`goto_assignments` doesn't
+        follow imports and statements. Multiple objects may be returned,
+        because Python itself is a dynamic language, which means depending on
+        an option you can have two different versions of a function.
 
         :rtype: list of :class:`api_classes.Definition`
         """
@@ -221,13 +286,37 @@ class Script(object):
         goto_path = self._module.get_path_under_cursor()
 
         context = self._module.get_context()
+        scopes = set()
+        lower_priority_operators = ('()', '(', ',')
+        """Operators that could hide callee."""
         if next(context) in ('class', 'def'):
             scopes = set([self._module.parser.user_scope])
         elif not goto_path:
             op = self._module.get_operator_under_cursor()
-            scopes = set([keywords.get_operator(op, self.pos)] if op else [])
-        else:
-            scopes = set(self._prepare_goto(goto_path))
+            if op and op not in lower_priority_operators:
+                scopes = set([keywords.get_operator(op, self.pos)])
+
+        # Fetch definition of callee
+        if not goto_path:
+            (call, _) = self._func_call_and_param_index()
+            if call is not None:
+                while call.next is not None:
+                    call = call.next
+                # reset cursor position:
+                (row, col) = call.name.end_pos
+                self.pos = (row, max(col - 1, 0))
+                self._module = modules.ModuleWithCursor(
+                    self._source_path,
+                    source=self.source,
+                    position=self.pos)
+                # then try to find the path again
+                goto_path = self._module.get_path_under_cursor()
+
+        if not scopes:
+            if goto_path:
+                scopes = set(self._prepare_goto(goto_path))
+            elif op in lower_priority_operators:
+                scopes = set([keywords.get_operator(op, self.pos)])
 
         scopes = resolve_import_paths(scopes)
 
@@ -236,23 +325,25 @@ class Script(object):
 
         d = set([api_classes.Definition(s) for s in scopes
                     if not isinstance(s, imports.ImportPath._GlobalNamespace)])
-        return sorted(d, key=lambda x: (x.module_path, x.start_pos))
+        return self._sorted_defs(d)
 
-    def goto(self):
+    @api_classes._clear_caches_after_call
+    def goto_assignments(self):
         """
-        Return the first definition found by goto. Imports and statements
-        aren't followed.  Multiple objects may be returned, because Python
-        itself is a dynamic language, which means depending on an option you
-        can have two different versions of a function.
+        Return the first definition found. Imports and statements aren't
+        followed. Multiple objects may be returned, because Python itself is a
+        dynamic language, which means depending on an option you can have two
+        different versions of a function.
 
         :rtype: list of :class:`api_classes.Definition`
         """
         d = [api_classes.Definition(d) for d in set(self._goto()[0])]
-        return sorted(d, key=lambda x: (x.module_path, x.start_pos))
+        return self._sorted_defs(d)
 
     def _goto(self, add_import_name=False):
         """
-        Used for goto and related_names.
+        Used for goto_assignments and usages.
+
         :param add_import_name: TODO add description
         """
         def follow_inexistent_imports(defs):
@@ -294,129 +385,88 @@ class Script(object):
             defs, search_name = evaluate.goto(stmt)
             definitions = follow_inexistent_imports(defs)
             if isinstance(user_stmt, pr.Statement):
-                if user_stmt.get_assignment_calls().start_pos > self.pos:
+                if user_stmt.get_commands()[0].start_pos > self.pos:
                     # The cursor must be after the start, otherwise the
                     # statement is just an assignee.
                     definitions = [user_stmt]
         return definitions, search_name
 
-    def related_names(self, additional_module_paths=[]):
+    @api_classes._clear_caches_after_call
+    def usages(self, additional_module_paths=()):
         """
-        Return :class:`api_classes.RelatedName` objects, which contain all
+        Return :class:`api_classes.Usage` objects, which contain all
         names that point to the definition of the name under the cursor. This
         is very useful for refactoring (renaming), or to show all usages of a
         variable.
 
         .. todo:: Implement additional_module_paths
 
-        :rtype: list of :class:`api_classes.RelatedName`
+        :rtype: list of :class:`api_classes.Usage`
         """
         user_stmt = self._parser.user_stmt
         definitions, search_name = self._goto(add_import_name=True)
         if isinstance(user_stmt, pr.Statement) \
-                    and self.pos < user_stmt.get_assignment_calls().start_pos:
+                    and self.pos < user_stmt.get_commands()[0].start_pos:
             # the search_name might be before `=`
             definitions = [v for v in user_stmt.set_vars
                                 if unicode(v.names[-1]) == search_name]
         if not isinstance(user_stmt, pr.Import):
             # import case is looked at with add_import_name option
-            definitions = dynamic.related_name_add_import_modules(definitions,
+            definitions = dynamic.usages_add_import_modules(definitions,
                                                                 search_name)
 
         module = set([d.get_parent_until() for d in definitions])
         module.add(self._parser.module)
-        names = dynamic.related_names(definitions, search_name, module)
+        names = dynamic.usages(definitions, search_name, module)
 
         for d in set(definitions):
             if isinstance(d, pr.Module):
-                names.append(api_classes.RelatedName(d, d))
+                names.append(api_classes.Usage(d, d))
             else:
-                names.append(api_classes.RelatedName(d.names[-1], d))
+                names.append(api_classes.Usage(d.names[-1], d))
 
-        return sorted(set(names), key=lambda x: (x.module_path, x.start_pos))
+        return self._sorted_defs(set(names))
 
-    def get_in_function_call(self):
+    @api_classes._clear_caches_after_call
+    def call_signatures(self):
         """
         Return the function object of the call you're currently in.
 
         E.g. if the cursor is here::
 
-            >>> abs(# <-- cursor is here
+            abs(# <-- cursor is here
 
         This would return the ``abs`` function. On the other hand::
 
-            >>> abs()# <-- cursor is here
+            abs()# <-- cursor is here
 
         This would return ``None``.
 
         :rtype: :class:`api_classes.CallDef`
         """
-        def check_user_stmt(user_stmt):
-            if user_stmt is None \
-                        or not isinstance(user_stmt, pr.Statement):
-                return None, 0
-            ass = helpers.fast_parent_copy(user_stmt.get_assignment_calls())
 
-            call, index, stop = helpers.search_function_call(ass, self.pos)
-            return call, index
-
-        def check_cache():
-            """ Do the parsing with a part parser, therefore reduce ressource
-            costs.
-            TODO this is not working with multi-line docstrings, improve.
-            """
-            if self.source_path is None:
-                return None, 0
-
-            try:
-                parser = cache.parser_cache[self.source_path].parser
-            except KeyError:
-                return None, 0
-            part_parser = self._module.get_part_parser()
-            user_stmt = part_parser.user_stmt
-            call, index = check_user_stmt(user_stmt)
-            if call:
-                old_stmt = parser.module.get_statement_for_position(self.pos)
-                if old_stmt is None:
-                    return None, 0
-                old_call, old_index = check_user_stmt(old_stmt)
-                if old_call:
-                    # compare repr because that should definitely be the same.
-                    # Otherwise the whole thing is out of sync.
-                    if repr(old_call) == repr(call):
-                        # return the index of the part_parser
-                        return old_call, index
-                return None, 0
-            else:
-                raise NotFoundError()
-
-        debug.speed('func_call start')
-        call = None
-        if settings.use_get_in_function_call_cache:
-            try:
-                call, index = check_cache()
-            except NotFoundError:
-                return None
+        call, index = self._func_call_and_param_index()
+        if call is None:
+            return []
 
         user_stmt = self._parser.user_stmt
-        if call is None:
-            # This is a backup, if the above is not successful.
-            call, index = check_user_stmt(user_stmt)
-            if call is None:
-                return None
-        debug.speed('func_call parsed')
-
-        with common.scale_speed_settings(settings.scale_get_in_function_call):
+        with common.scale_speed_settings(settings.scale_function_definition):
             _callable = lambda: evaluate.follow_call(call)
-            origins = cache.cache_get_in_function_call(_callable, user_stmt)
+            origins = cache.cache_function_definition(_callable, user_stmt)
         debug.speed('func_call followed')
 
-        if len(origins) == 0:
-            return None
-        # just take entry zero, because we need just one.
-        executable = origins[0]
+        return [api_classes.CallDef(o, index, call) for o in origins]
 
-        return api_classes.CallDef(executable, index, call)
+    def _func_call_and_param_index(self):
+        debug.speed('func_call start')
+        call, index = None, 0
+        if call is None:
+            user_stmt = self._parser.user_stmt
+            if user_stmt is not None and isinstance(user_stmt, pr.Statement):
+                call, index, _ = helpers.search_function_definition(
+                                                        user_stmt, self.pos)
+        debug.speed('func_call parsed')
+        return call, index
 
     def _get_on_import_stmt(self, is_like_search=False):
         """ Resolve the user statement, if it is an import. Only resolve the
@@ -446,8 +496,30 @@ class Script(object):
         match = re.match(r'^(.*?)(\.|)(\w?[\w\d]*)$', path, flags=re.S)
         return match.groups()
 
-    def __del__(self):
-        api_classes._clear_caches()
+    @staticmethod
+    def _sorted_defs(d):
+        # Note: `or ''` below is required because `module_path` could be
+        #       None and you can't compare None and str in Python 3.
+        return sorted(d, key=lambda x: (x.module_path or '', x.start_pos))
+
+
+def defined_names(source, source_path=None, source_encoding='utf-8'):
+    """
+    Get all definitions in `source` sorted by its position.
+
+    This functions can be used for listing functions, classes and
+    data defined in a file.  This can be useful if you want to list
+    them in "sidebar".  Each element in the returned list also has
+    `defined_names` method which can be used to get sub-definitions
+    (e.g., methods in class).
+
+    :rtype: list of api_classes.Definition
+    """
+    parser = parsing.Parser(
+        modules.source_to_unicode(source, source_encoding),
+        module_path=source_path,
+    )
+    return api_classes._defined_names(parser.scope)
 
 
 def set_debug_function(func_cb=debug.print_to_stdout, warnings=True,
@@ -467,10 +539,12 @@ def _quick_complete(source):
     """
     Convenience function to complete a source string at the end.
 
-    Example::
+    Example:
 
-        >>> _quick_complete('import json\\njson.l')
-        [<Completion: load>, <Completion: loads>]
+    >>> _quick_complete('''
+    ... import datetime
+    ... datetime.da''')                                 #doctest: +ELLIPSIS
+    [<Completion: date>, <Completion: datetime>, ...]
 
     :param source: The source code to be completed.
     :type source: string
@@ -480,4 +554,4 @@ def _quick_complete(source):
     lines = re.sub(r'[\n\r\s]*$', '', source).splitlines()
     pos = len(lines), len(lines[-1])
     script = Script(source, pos[0], pos[1], '')
-    return script.complete()
+    return script.completions()
