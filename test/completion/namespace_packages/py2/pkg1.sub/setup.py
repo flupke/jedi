@@ -10,7 +10,9 @@ here = op.abspath(op.dirname(__file__))
 os.chdir(here)
 
 
-setup(name='pkg1',
+setup(name='pkg1.sub',
     namespace_packages=['pkg1'],
-    packages=['pkg1'],
+    packages=['pkg1.sub'],
+    zip_safe=False
 )
+

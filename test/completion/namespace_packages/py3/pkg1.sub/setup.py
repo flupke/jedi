@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-from setuptools import setup
+from distutils.core import setup
 import os
 import os.path as op
 
@@ -11,7 +11,6 @@ os.chdir(here)
 
 
 setup(name='pkg1.sub',
-    namespace_packages=['pkg1'],
-    packages=['pkg1', 'pkg1.sub'],
+    packages=['pkg1.sub'],
 )
 
